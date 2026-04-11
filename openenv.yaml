@@ -1,0 +1,97 @@
+name: KisanEnv
+version: "1.0.0"
+description: >
+  Real-world agricultural advisory environment where an AI agent learns
+  to advise Indian farmers on crop management, irrigation, pest control,
+  fertilizer use, and harvest timing across a full growing season.
+
+tags:
+  - openenv
+  - agriculture
+  - real-world
+  - advisory
+  - multi-task
+
+observation_space:
+  type: dict
+  fields:
+    day:              { type: int,   description: "Current day in the season" }
+    crop:             { type: str,   description: "Crop being grown" }
+    soil_type:        { type: str,   description: "Type of soil" }
+    season:           { type: str,   description: "Growing season (kharif/rabi/zaid)" }
+    weather:          { type: str,   description: "Current weather condition" }
+    soil_moisture:    { type: float, range: [0, 1], description: "Soil water content" }
+    soil_nitrogen:    { type: float, range: [0, 1], description: "Nitrogen level" }
+    soil_phosphorus:  { type: float, range: [0, 1], description: "Phosphorus level" }
+    pest_level:       { type: str,   description: "Active pest/disease or none" }
+    crop_health:      { type: float, range: [0, 1], description: "Overall crop health" }
+    days_to_harvest:  { type: int,   description: "Days until crop is ready" }
+    warnings:         { type: list,  description: "Active advisory warnings" }
+    harvest_done:     { type: bool,  description: "Whether harvest is complete" }
+    valid_actions:    { type: list,  description: "All valid action strings" }
+
+action_space:
+  type: discrete
+  actions:
+    - irrigate
+    - apply_fertilizer_nitrogen
+    - apply_fertilizer_phosphorus
+    - apply_pesticide_chemical
+    - apply_pesticide_organic
+    - apply_fungicide
+    - harvest
+    - skip_day
+    - soil_test
+    - consult_weather
+    - plant_cover_crop
+    - prune
+    - mulch
+
+reward:
+  range: [-1.0, 1.0]
+  description: Positive rewards for correct agronomic decisions. Negative for poor choices.
+  partial_progress: true
+
+tasks:
+  - id: task_easy
+    name: Irrigation Management
+    difficulty: easy
+    score_range: [0.0, 1.0]
+    description: Keep soil moisture above 0.4 through correct irrigation decisions.
+    grader_endpoint: GET /grade/easy
+
+  - id: task_medium
+    name: Pest and Nutrient Control
+    difficulty: medium
+    score_range: [0.0, 1.0]
+    description: Maintain crop health above 0.7 while managing pests and nutrients.
+    grader_endpoint: GET /grade/medium
+
+  - id: task_hard
+    name: Full Season Yield Optimization
+    difficulty: hard
+    score_range: [0.0, 1.0]
+    description: Complete a full growing season from planting to harvest with maximum yield.
+    grader_endpoint: GET /grade/hard
+
+endpoints:
+  reset:
+    method: POST
+    path: /reset
+  step:
+    method: POST
+    path: /step
+  state:
+    method: GET
+    path: /state
+  validate:
+    method: GET
+    path: /openenv/validate
+
+infrastructure:
+  docker: true
+  hf_space: true
+  base_image: python:3.11-slim
+  port: 7860
+  runtime_limit_minutes: 20
+  memory_gb: 8
