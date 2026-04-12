@@ -277,7 +277,26 @@ class FarmState:
 
 
 # ─── Global State (one session per HF Space instance) ────────────────────────
-farm = FarmState()
+try:
+    farm = FarmState()
+except Exception:
+    farm = FarmState.__new__(FarmState)
+    farm.day = 1
+    farm.crop = "wheat"
+    farm.soil_type = "loamy"
+    farm.season = "rabi"
+    farm.weather = "sunny"
+    farm.soil_moisture = 0.5
+    farm.soil_nitrogen = 0.5
+    farm.soil_phosphorus = 0.5
+    farm.pest_level = "none"
+    farm.crop_health = 0.8
+    farm.days_to_harvest = 100
+    farm.total_days = 110
+    farm.actions_taken = []
+    farm.warnings = []
+    farm.harvest_done = False
+    farm.yield_score = 0.0
 
 
 # ─── OpenEnv API Endpoints ────────────────────────────────────────────────────
