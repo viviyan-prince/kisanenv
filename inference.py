@@ -6,6 +6,7 @@ Uses the OpenAI client (configured via environment variables) as the LLM backbon
 
 import os
 import json
+import time
 import requests
 from openai import OpenAI
 
@@ -15,30 +16,54 @@ MODEL_NAME       = os.getenv("MODEL_NAME",   "<your-active-model-name>")
 HF_TOKEN         = os.getenv("HF_TOKEN")
 LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")
 
+# ─── Helper: wait for Space to be ready ───────────────────────────────────────
+def wait_for_space(retries=10, delay=6):
+    """Ping root until Space responds, with retries."""
+    for i in range(retries):
+        try:
+            r = requests.get(f"{API_BASE_URL}/", timeout=15)
+            if r.status_code == 200:
+                return True
+        except Exception:
+            pass
+        print(json.dumps({"type": "WARN", "message": f"Space not ready, retry {i+1}/{retries}..."}))
+        time.sleep(delay)
+    return False
+
 # ─── Helper: Call the environment ─────────────────────────────────────────────
-def env_reset():
-    resp = requests.post(f"{API_BASE_URL}/reset", timeout=30)
-    resp.raise_for_status()
-    return resp.json()
+def env_reset(retries=5, delay=5):
+    for attempt in range(retries):
+        try:
+            resp = requests.post(f"{API_BASE_URL}/reset", timeout=30)
+            if resp.status_code == 200:
+                return resp.json()
+            print(json.dumps({"type": "WARN", "message": f"Reset returned {resp.status_code}, retry {attempt+1}"}))
+        except Exception as e:
+            print(json.dumps({"type": "WARN", "message": f"Reset error: {str(e)}, retry {attempt+1}"}))
+        time.sleep(delay)
+    raise RuntimeError(f"Reset failed after {retries} attempts")
 
-def env_step(action: str):
-    resp = requests.post(
-        f"{API_BASE_URL}/step",
-        json={"action": action},
-        timeout=30
-    )
-    resp.raise_for_status()
-    return resp.json()
+def env_step(action: str, retries=3, delay=3):
+    for attempt in range(retries):
+        try:
+            resp = requests.post(
+                f"{API_BASE_URL}/step",
+                json={"action": action},
+                timeout=30
+            )
+            if resp.status_code == 200:
+                return resp.json()
+            print(json.dumps({"type": "WARN", "message": f"Step returned {resp.status_code}"}))
+        except Exception as e:
+            print(json.dumps({"type": "WARN", "message": f"Step error: {str(e)}, retry {attempt+1}"}))
+        time.sleep(delay)
+    # Return a safe fallback so execution continues
+    return {"observation": {}, "reward": 0.0, "done": True, "info": {"error": "step failed"}}
 
-def env_state():
-    resp = requests.get(f"{API_BASE_URL}/state", timeout=30)
-    resp.raise_for_status()
-    return resp.json()
-
-# ─── Rule-based fallback (used when LLM fails) ────────────────────────────────
+# ─── Rule-based fallback ──────────────────────────────────────────────────────
 def rule_based_fallback(obs: dict) -> str:
     if obs.get("pest_level", "none") != "none":
-        pest = obs["pest_level"]
+        pest = obs.get("pest_level", "")
         if pest in ["fungal_blight", "rust"]:
             return "apply_fungicide"
         return "apply_pesticide_organic"
@@ -65,7 +90,6 @@ Respond ONLY with a single action string. Nothing else."""
 
 def get_llm_action(observation: dict) -> str:
     try:
-        # Create client inside function so it only runs when env vars are set
         client = OpenAI(
             base_url=API_BASE_URL,
             api_key=HF_TOKEN if HF_TOKEN else "no-key-needed",
@@ -80,9 +104,8 @@ def get_llm_action(observation: dict) -> str:
             max_tokens=20,
             temperature=0.1,
         )
-        action = response.choices[0].message.content.strip().lower().replace('"', '').replace("'", "")
-        valid_actions = observation.get("valid_actions", [])
-        if action in valid_actions:
+        action = response.choices[0].message.content.strip().lower().replace('"','').replace("'","")
+        if action in observation.get("valid_actions", []):
             return action
     except Exception as e:
         print(json.dumps({"type": "WARN", "message": f"LLM failed: {str(e)}, using rule-based"}))
@@ -93,6 +116,9 @@ def run_inference():
     MAX_STEPS = 50
     total_reward = 0.0
 
+    # Wait for Space to be ready before starting
+    wait_for_space(retries=10, delay=6)
+
     print(json.dumps({
         "type": "START",
         "model": MODEL_NAME,
@@ -100,41 +126,31 @@ def run_inference():
         "max_steps": MAX_STEPS
     }))
 
-    try:
-        reset_result = env_reset()
-    except Exception as e:
-        print(json.dumps({"type": "ERROR", "message": f"Reset failed: {str(e)}"}))
-        raise
-
-    observation = reset_result.get("observation", {})
-    step_num = 0
+    reset_result = env_reset()
+    observation  = reset_result.get("observation", {})
+    step_num     = 0
 
     for step_num in range(MAX_STEPS):
         action = get_llm_action(observation)
+        result = env_step(action)
 
-        try:
-            result = env_step(action)
-        except Exception as e:
-            print(json.dumps({"type": "ERROR", "step": step_num + 1, "message": str(e)}))
-            break
-
-        observation = result.get("observation", {})
-        reward      = result.get("reward", 0.0)
-        done        = result.get("done", False)
-        info        = result.get("info", {})
+        observation  = result.get("observation", {})
+        reward       = result.get("reward", 0.0)
+        done         = result.get("done", False)
+        info         = result.get("info", {})
         total_reward += reward
 
         print(json.dumps({
-            "type": "STEP",
-            "step": step_num + 1,
-            "action": action,
-            "reward": reward,
-            "done": done,
-            "crop_health":      observation.get("crop_health"),
-            "soil_moisture":    observation.get("soil_moisture"),
-            "pest_level":       observation.get("pest_level"),
-            "days_to_harvest":  observation.get("days_to_harvest"),
-            "info": info
+            "type":          "STEP",
+            "step":          step_num + 1,
+            "action":        action,
+            "reward":        reward,
+            "done":          done,
+            "crop_health":   observation.get("crop_health"),
+            "soil_moisture": observation.get("soil_moisture"),
+            "pest_level":    observation.get("pest_level"),
+            "days_to_harvest": observation.get("days_to_harvest"),
+            "info":          info
         }))
 
         if done:
@@ -150,9 +166,9 @@ def run_inference():
         print(json.dumps({"type": "WARN", "message": f"Grader fetch failed: {str(e)}"}))
 
     print(json.dumps({
-        "type": "END",
+        "type":         "END",
         "total_reward": round(total_reward, 4),
-        "steps_taken": step_num + 1,
+        "steps_taken":  step_num + 1,
         "scores": {
             "easy":   round(easy_score,   4),
             "medium": round(medium_score, 4),
